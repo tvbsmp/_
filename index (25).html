@@ -1,0 +1,215 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Superflat Minecraft 3D</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+        #crosshair { 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            width: 10px; 
+            height: 10px; 
+            transform: translate(-50%, -50%); 
+            pointer-events: none; 
+        }
+    </style>
+</head>
+<body>
+    <div id="crosshair">+</div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.134.0/examples/js/controls/PointerLockControls.js"></script>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Player controls
+        const controls = new THREE.PointerLockControls(camera, document.body);
+        document.addEventListener('click', () => controls.lock());
+        camera.position.set(0, 2, 0); // Start above top layer (y=1)
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040);
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        // Block textures
+        const textureLoader = new THREE.TextureLoader();
+        let blockMaterial;
+        try {
+            const bedrockTexture = textureLoader.load(
+                'https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.20.1/assets/minecraft/textures/block/bedrock.png',
+                () => console.log('Bedrock texture loaded successfully'),
+                undefined,
+                (err) => console.error('Bedrock texture loading failed:', err)
+            );
+            blockMaterial = new THREE.MeshLambertMaterial({ map: bedrockTexture });
+        } catch (e) {
+            console.error('Error setting up texture:', e);
+            blockMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 }); // Fallback to dark gray
+        }
+
+        // Generate superflat world with 3 layers
+        const worldSize = 16;
+        const blocks = [];
+        for (let x = -worldSize / 2; x < worldSize / 2; x++) {
+            for (let z = -worldSize / 2; z < worldSize / 2; z++) {
+                for (let y = -1; y <= 1; y++) { // Layers at y=-1, y=0, y=1
+                    const geometry = new THREE.BoxGeometry(1, 1, 1);
+                    const block = new THREE.Mesh(geometry, blockMaterial);
+                    block.position.set(x, y, z);
+                    scene.add(block);
+                    blocks.push(block);
+                }
+            }
+        }
+
+        // Player physics
+        let velocity = new THREE.Vector3();
+        const moveSpeed = 0.08;
+        const jumpSpeed = 0.2;
+        const gravity = 0.01;
+        let canJump = false;
+
+        // Keyboard input
+        const keys = {};
+        document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+        document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+        // Block interaction
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2(0, 0);
+        document.addEventListener('mousedown', (e) => {
+            if (!controls.isLocked) return;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(blocks);
+            if (intersects.length > 0) {
+                const intersect = intersects[0];
+                if (e.button === 0) { // Left click: remove block
+                    scene.remove(intersect.object);
+                    blocks.splice(blocks.indexOf(intersect.object), 1);
+                } else if (e.button === 2) { // Right click: place block
+                    const normal = intersect.face.normal;
+                    const position = intersect.object.position.clone().add(normal);
+                    const geometry = new THREE.BoxGeometry(1, 1, 1);
+                    const block = new THREE.Mesh(geometry, blockMaterial);
+                    block.position.copy(position);
+                    scene.add(block);
+                    blocks.push(block);
+                }
+            }
+        });
+
+        // Game loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Movement with WASD (relative to camera direction)
+            velocity.x = 0;
+            velocity.z = 0;
+            const direction = new THREE.Vector3();
+            const right = new THREE.Vector3();
+            camera.getWorldDirection(direction);
+            direction.y = 0; // Keep movement horizontal
+            direction.normalize();
+            right.crossVectors(camera.up, direction).normalize();
+
+            // Calculate movement vector
+            const moveVector = new THREE.Vector3();
+            if (keys['KeyW']) { // Forward
+                moveVector.add(direction);
+            }
+            if (keys['KeyS']) { // Backward
+                moveVector.sub(direction);
+            }
+            if (keys['KeyA']) { // Left
+                moveVector.sub(right);
+            }
+            if (keys['KeyD']) { // Right
+                moveVector.add(right);
+            }
+
+            // Normalize to prevent faster diagonal movement
+            if (moveVector.length() > 0) {
+                moveVector.normalize().multiplyScalar(moveSpeed);
+                velocity.x = moveVector.x;
+                velocity.z = moveVector.z;
+            }
+
+            if (keys['Space'] && canJump) {
+                velocity.y = jumpSpeed;
+                canJump = false;
+            }
+
+            // Apply gravity
+            velocity.y -= gravity;
+            controls.getObject().position.add(velocity);
+
+            // Ground collision (adjusted for top layer at y=1)
+            if (controls.getObject().position.y < 1.5) {
+                controls.getObject().position.y = 1.5;
+                velocity.y = 0;
+                canJump = true;
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
